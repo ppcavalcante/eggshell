@@ -3,8 +3,9 @@ Introduction
 
 The [eggshell](https://github.com/usbarmory/eggshell) project is a
 [TamaGo](https://github.com/usbarmory/tamago) unikernel that implements the
-Linux ABI to run unmodified POSIX compliant C applications compiled (static or
-dynamically linked) against the [musl](https://musl.libc.org) library.
+Linux ABI to run unmodified Linux executables: statically linked ones, such as C
+programs or Go programs (including the Go toolchain), and programs dynamically
+linked against the [musl](https://musl.libc.org) C library.
 
 While TamaGo remains committed to promote pure Go unikernels, this project is
 an experiment to address uses cases where the need for a full operating environment
@@ -51,15 +52,14 @@ system kernel, runs at the highest privilege level.
 
 System calls trap into the Go runtime (in a manner similar to the
 [GoTEE](https://github.com/usbarmory/GoTEE) execution model) and are serviced
-following the **Linux system call ABI**, which is the interface the POSIX C
-library is built on.
+following the **Linux system call ABI**.
 
 Each user thread is a goroutine, blocking system calls map directly onto the Go
 scheduler.
 
 ```
  ┌────────────────────────────────────────────── User mode ─┐
- │  bash   redis-server   busybox   u-root    go   ...      │  musl ELF binaries
+ │  bash   redis-server   busybox   u-root    go   ...      │  Linux ELF binaries
  └──────────────┬──────────────────────▲────────────────────┘
                 │                      │
         syscall │   page fault, timer  │ iretq
