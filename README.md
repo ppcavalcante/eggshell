@@ -59,7 +59,7 @@ scheduler.
 
 ```
  ┌────────────────────────────────────────────── User mode ─┐
- │  bash   redis-server   busybox   u-root    go   ...      │  Linux ELF binaries
+ │  bash   redis-server   busybox   u-root    go   ...      │ Linux ELF binaries
  └──────────────┬──────────────────────▲────────────────────┘
                 │                      │
         syscall │   page fault, timer  │ iretq
