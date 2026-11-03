@@ -6,6 +6,10 @@ The [eggshell](https://github.com/usbarmory/eggshell) project is a
 Linux ABI to run unmodified POSIX compliant C applications compiled (static or
 dynamically linked) against the [musl](https://musl.libc.org) library.
 
+While TamaGo remains committed to promote pure Go unikernels, this project is
+an experiment to address uses cases where the need for a full operating environment
+is unavoidable, such as running the Go compiler.
+
 > [!WARNING]
 > This project is at its early stages and therefore experimental.
 
