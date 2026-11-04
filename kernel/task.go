@@ -303,7 +303,13 @@ type trap struct {
 // exception handles a synchronous exception raised by user code.
 func (t *Task) exception(tr trap) {
 	if tr.kind == trapFault {
-		if t.proc.mm.fault(tr.addr, tr.access) == 0 {
+		switch t.proc.mm.fault(tr.addr, tr.access) {
+		case 0:
+			return
+		case ENOMEM:
+			// no page to resolve the fault, as the Linux OOM killer
+			printk("kernel: out of memory, killing pid %d (%s) on fault at %#x\n", t.proc.pid, t.proc.comm, tr.addr)
+			t.forceSignal(SIGKILL, SI_KERNEL, tr.addr)
 			return
 		}
 
