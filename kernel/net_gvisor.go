@@ -29,6 +29,12 @@ var (
 
 // SetNetStack registers the gVisor network stack serving AF_INET sockets.
 func SetNetStack(s *stack.Stack) {
+	// TODO: acknowledgments are delayed to be sent along with responses,
+	// requires merge of https://github.com/google/gvisor/pull/16953
+	//
+	//da := tcpip.TCPDelayedACKOption(true)
+	//s.SetTransportProtocolOption(tcp.ProtocolNumber, &da)
+
 	netStack = s
 }
 
