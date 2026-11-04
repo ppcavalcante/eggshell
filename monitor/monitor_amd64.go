@@ -135,6 +135,9 @@ type cpu struct {
 	gdtr   [16]byte
 	tss    [26]uint32
 	kstack [kernelStackSize]byte
+	// interrupt stack for NMI, #DF and #MC, which can occur in ring 0
+	// with the user stack pointer (see enter)
+	istack [4096]byte
 
 	// TLB flush request before the next context execution
 	forceCR3 uint8
@@ -173,7 +176,7 @@ func aligned64(fp *FPState) bool
 func exec(ctx *ExecCtx)
 func syscallEntryAddr() uint64
 func vectorsAddr() uint64
-func tableAddrs(c *cpu) (gdt uint64, tss uint64, idt uint64, kstack uint64)
+func tableAddrs(c *cpu) (gdt uint64, tss uint64, idt uint64, kstack uint64, istack uint64)
 func relay(n uint64)
 
 // vectorAddr returns the monitor IDT entry point for the argument vector.
@@ -207,12 +210,16 @@ func Init(tscFrequency uint64) error {
 	gdt[3] = 0x0000f20000000000 // user data (DPL 3)
 	gdt[4] = 0x0020fa0000000000 // user code (64-bit, DPL 3)
 
-	gdtAddr, tssAddr, idtAddr, kstackAddr := tableAddrs(c)
+	gdtAddr, tssAddr, idtAddr, kstackAddr, istackAddr := tableAddrs(c)
 
-	// TSS: ring 0 stack for interrupts from ring 3, no I/O permissions
+	// TSS: ring 0 stack for interrupts from ring 3, interrupt stack (IST1)
+	// for NMI, #DF and #MC, no I/O permissions
 	rsp0 := (kstackAddr + kernelStackSize - 64) &^ 15
 	tss[1] = uint32(rsp0)
 	tss[2] = uint32(rsp0 >> 32)
+	ist1 := (istackAddr + uint64(len(c.istack)) - 64) &^ 15
+	tss[9] = uint32(ist1)
+	tss[10] = uint32(ist1 >> 32)
 	tss[25] = 104 << 16
 
 	limit := uint64(103)
@@ -233,6 +240,11 @@ func Init(tscFrequency uint64) error {
 		}
 
 		idt[i*2], idt[i*2+1] = gateDescriptor(vectorAddr(i), dpl)
+
+		// NMI, #DF, #MC: IST1
+		if i == 2 || i == 8 || i == 18 {
+			idt[i*2] |= 1 << 32
+		}
 	}
 
 	binary.LittleEndian.PutUint16(uIDTR[0:], uint16(len(idt)*8-1))
@@ -240,8 +252,11 @@ func Init(tscFrequency uint64) error {
 
 	// system call instruction: EFER.SCE, also enable NX (EFER.NXE)
 	wrmsr(efer, rdmsr(efer)|1<<0|1<<11)
+
+	// SYSRET selectors: SS = STAR[63:48]+8 (userDS), CS = STAR[63:48]+16 (userCS)
 	wrmsr(star, uint64(kernelDS|ring3)<<48|uint64(kernelCS)<<32)
 	wrmsr(lstar, syscallEntryAddr())
+
 	// mask TF, IF, DF, IOPL, NT, AC on entry
 	wrmsr(sfmask, 0x47700)
 

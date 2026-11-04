@@ -23,6 +23,41 @@
 #define FRAME_FS 40
 #define FRAME_IDTR 48
 
+// SAVE_GPRS saves general purpose registers, but RAX and RSP, to the context
+// pointed by AX.
+#define SAVE_GPRS \
+	MOVQ	BX, ExecCtx_RBX(AX); \
+	MOVQ	CX, ExecCtx_RCX(AX); \
+	MOVQ	DX, ExecCtx_RDX(AX); \
+	MOVQ	SI, ExecCtx_RSI(AX); \
+	MOVQ	DI, ExecCtx_RDI(AX); \
+	MOVQ	BP, ExecCtx_RBP(AX); \
+	MOVQ	R8, ExecCtx_R8(AX); \
+	MOVQ	R9, ExecCtx_R9(AX); \
+	MOVQ	R10, ExecCtx_R10(AX); \
+	MOVQ	R11, ExecCtx_R11(AX); \
+	MOVQ	R12, ExecCtx_R12(AX); \
+	MOVQ	R13, ExecCtx_R13(AX); \
+	MOVQ	R14, ExecCtx_R14(AX); \
+	MOVQ	R15, ExecCtx_R15(AX)
+
+// RESTORE_GPRS restores general purpose registers except RBX (the context
+// pointer), RCX and R11 (set by SYSRET) and RSP, from the context pointed by
+// BX.
+#define RESTORE_GPRS \
+	MOVQ	ExecCtx_RAX(BX), AX; \
+	MOVQ	ExecCtx_RDX(BX), DX; \
+	MOVQ	ExecCtx_RSI(BX), SI; \
+	MOVQ	ExecCtx_RDI(BX), DI; \
+	MOVQ	ExecCtx_RBP(BX), BP; \
+	MOVQ	ExecCtx_R8(BX), R8; \
+	MOVQ	ExecCtx_R9(BX), R9; \
+	MOVQ	ExecCtx_R10(BX), R10; \
+	MOVQ	ExecCtx_R12(BX), R12; \
+	MOVQ	ExecCtx_R13(BX), R13; \
+	MOVQ	ExecCtx_R14(BX), R14; \
+	MOVQ	ExecCtx_R15(BX), R15
+
 // func aligned64(fp *FPState) bool
 TEXT ·aligned64(SB),NOSPLIT,$0-9
 	MOVQ	fp+0(FP), AX
@@ -135,6 +170,36 @@ fp:
 	MOVL	$-1, DX
 	XRSTOR64	(CX)
 
+	// System call returns with RCX and RIP, R11 and RFLAGS unchanged (as
+	// left by the syscall instruction), in such cases we use SYSRET as it
+	// is cheaper than IRETQ.
+
+	CMPQ	ExecCtx_Vector(BX), $const_VectorSyscall
+	JNE	iret
+
+	MOVQ	ExecCtx_RIP(BX), CX
+	CMPQ	CX, ExecCtx_RCX(BX)
+	JNE	iret
+
+	MOVQ	ExecCtx_RFLAGS(BX), R11
+	CMPQ	R11, ExecCtx_R11(BX)
+	JNE	iret
+
+	MOVQ	CX, AX
+	SHRQ	$47, AX
+	JNE	iret
+
+	ANDQ	$0x250dd5, R11	// user settable flags (no IOPL)
+	ORQ	$0x202, R11	// IF
+
+	RESTORE_GPRS
+	MOVQ	ExecCtx_RSP(BX), SP
+	MOVQ	ExecCtx_RBX(BX), BX
+
+	// SYSRETQ (the assembler only encodes the 32-bit form)
+	BYTE	$0x48; BYTE $0x0f; BYTE $0x07
+
+iret:
 	// interrupt return frame: SS, RSP, RFLAGS, CS, RIP
 	PUSHQ	$const_userDS
 	PUSHQ	ExecCtx_RSP(BX)
@@ -145,21 +210,9 @@ fp:
 	PUSHQ	$const_userCS
 	PUSHQ	ExecCtx_RIP(BX)
 
-	// restore general purpose registers
-	MOVQ	ExecCtx_RAX(BX), AX
+	RESTORE_GPRS
 	MOVQ	ExecCtx_RCX(BX), CX
-	MOVQ	ExecCtx_RDX(BX), DX
-	MOVQ	ExecCtx_RSI(BX), SI
-	MOVQ	ExecCtx_RDI(BX), DI
-	MOVQ	ExecCtx_RBP(BX), BP
-	MOVQ	ExecCtx_R8(BX), R8
-	MOVQ	ExecCtx_R9(BX), R9
-	MOVQ	ExecCtx_R10(BX), R10
 	MOVQ	ExecCtx_R11(BX), R11
-	MOVQ	ExecCtx_R12(BX), R12
-	MOVQ	ExecCtx_R13(BX), R13
-	MOVQ	ExecCtx_R14(BX), R14
-	MOVQ	ExecCtx_R15(BX), R15
 	MOVQ	ExecCtx_RBX(BX), BX
 
 	IRETQ
@@ -205,20 +258,7 @@ TEXT ·syscallEntry(SB),NOSPLIT|NOFRAME,$0
 	MOVQ	AX, ·bsp+cpu_scratch(SB)
 	MOVQ	·bsp+cpu_ctx(SB), AX
 
-	MOVQ	BX, ExecCtx_RBX(AX)
-	MOVQ	CX, ExecCtx_RCX(AX)
-	MOVQ	DX, ExecCtx_RDX(AX)
-	MOVQ	SI, ExecCtx_RSI(AX)
-	MOVQ	DI, ExecCtx_RDI(AX)
-	MOVQ	BP, ExecCtx_RBP(AX)
-	MOVQ	R8, ExecCtx_R8(AX)
-	MOVQ	R9, ExecCtx_R9(AX)
-	MOVQ	R10, ExecCtx_R10(AX)
-	MOVQ	R11, ExecCtx_R11(AX)
-	MOVQ	R12, ExecCtx_R12(AX)
-	MOVQ	R13, ExecCtx_R13(AX)
-	MOVQ	R14, ExecCtx_R14(AX)
-	MOVQ	R15, ExecCtx_R15(AX)
+	SAVE_GPRS
 	MOVQ	CX, ExecCtx_RIP(AX)
 	MOVQ	R11, ExecCtx_RFLAGS(AX)
 	MOVQ	SP, ExecCtx_RSP(AX)
@@ -238,20 +278,7 @@ TEXT ·intrCommon(SB),NOSPLIT|NOFRAME,$0
 	MOVQ	$·bsp(SB), AX
 	MOVQ	cpu_ctx(AX), AX
 
-	MOVQ	BX, ExecCtx_RBX(AX)
-	MOVQ	CX, ExecCtx_RCX(AX)
-	MOVQ	DX, ExecCtx_RDX(AX)
-	MOVQ	SI, ExecCtx_RSI(AX)
-	MOVQ	DI, ExecCtx_RDI(AX)
-	MOVQ	BP, ExecCtx_RBP(AX)
-	MOVQ	R8, ExecCtx_R8(AX)
-	MOVQ	R9, ExecCtx_R9(AX)
-	MOVQ	R10, ExecCtx_R10(AX)
-	MOVQ	R11, ExecCtx_R11(AX)
-	MOVQ	R12, ExecCtx_R12(AX)
-	MOVQ	R13, ExecCtx_R13(AX)
-	MOVQ	R14, ExecCtx_R14(AX)
-	MOVQ	R15, ExecCtx_R15(AX)
+	SAVE_GPRS
 
 	POPQ	ExecCtx_RAX(AX)
 	POPQ	ExecCtx_Vector(AX)
@@ -314,8 +341,8 @@ TEXT ·vectorsAddr(SB),NOSPLIT,$0-8
 	MOVQ	AX, ret+0(FP)
 	RET
 
-// func tableAddrs(c *cpu) (gdt uint64, tss uint64, idt uint64, kstack uint64)
-TEXT ·tableAddrs(SB),NOSPLIT,$0-40
+// func tableAddrs(c *cpu) (gdt uint64, tss uint64, idt uint64, kstack uint64, istack uint64)
+TEXT ·tableAddrs(SB),NOSPLIT,$0-48
 	MOVQ	c+0(FP), BX
 	LEAQ	cpu_gdt(BX), AX
 	MOVQ	AX, gdt+8(FP)
@@ -325,6 +352,8 @@ TEXT ·tableAddrs(SB),NOSPLIT,$0-40
 	MOVQ	AX, idt+24(FP)
 	LEAQ	cpu_kstack(BX), AX
 	MOVQ	AX, kstack+32(FP)
+	LEAQ	cpu_istack(BX), AX
+	MOVQ	AX, istack+40(FP)
 	RET
 
 // func syscallEntryAddr() uint64
