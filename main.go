@@ -16,10 +16,10 @@ import (
 
 	board "github.com/usbarmory/eggshell/board/microvm"
 	"github.com/usbarmory/eggshell/internal/boot"
+	"github.com/usbarmory/eggshell/internal/network"
+	"github.com/usbarmory/eggshell/internal/sshd"
 	"github.com/usbarmory/eggshell/kernel"
-	"github.com/usbarmory/eggshell/network"
 	"github.com/usbarmory/eggshell/rootfs"
-	"github.com/usbarmory/eggshell/sshd"
 )
 
 var opts = boot.Options{
