@@ -513,10 +513,13 @@ func (s *inetSocket) setsockopt(level int, opt int, val []byte) Errno {
 		case SO_SNDTIMEO:
 			s.sndtimeo = sockTimeout(val)
 		case SO_LINGER:
-			if len(val) >= 8 {
+			// struct linger
+			var l struct{ Onoff, Linger int32 }
+
+			if _, err := binary.Decode(val, binary.LittleEndian, &l); err == nil {
 				so.SetLinger(tcpip.LingerOption{
-					Enabled: binary.LittleEndian.Uint32(val[0:]) != 0,
-					Timeout: time.Duration(binary.LittleEndian.Uint32(val[4:])) * time.Second,
+					Enabled: l.Onoff != 0,
+					Timeout: time.Duration(l.Linger) * time.Second,
 				})
 			}
 		}

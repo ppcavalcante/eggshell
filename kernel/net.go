@@ -736,9 +736,7 @@ func registerNetSyscalls() {
 			return fail(err)
 		}
 
-		b := make([]byte, 8)
-		binary.LittleEndian.PutUint32(b[0:], uint32(fd0))
-		binary.LittleEndian.PutUint32(b[4:], uint32(fd1))
+		b, _ := binary.Append(nil, binary.LittleEndian, []int32{int32(fd0), int32(fd1)})
 
 		return 0, t.proc.mm.copyOut(a[3], b)
 	})

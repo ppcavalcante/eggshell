@@ -1356,9 +1356,7 @@ func registerFSSyscalls() {
 			return fail(Errno(-wfd))
 		}
 
-		b := make([]byte, 8)
-		binary.LittleEndian.PutUint32(b[0:], uint32(rfd))
-		binary.LittleEndian.PutUint32(b[4:], uint32(wfd))
+		b, _ := binary.Append(nil, binary.LittleEndian, []int32{int32(rfd), int32(wfd)})
 
 		if err := t.proc.mm.copyOut(a[0], b); err != 0 {
 			files.close(rfd)

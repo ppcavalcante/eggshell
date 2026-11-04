@@ -62,6 +62,29 @@ func (s *sysinfo) Bytes() []byte {
 	return b
 }
 
+// rusage represents the struct rusage.
+type rusage struct {
+	Utime  [2]int64 // struct timeval
+	Stime  [2]int64
+	Maxrss int64
+	_      [13]int64
+}
+
+// tms represents the struct tms.
+type tms struct {
+	Utime  int64
+	Stime  int64
+	Cutime int64
+	Cstime int64
+}
+
+// capData represents the struct __user_cap_data_struct.
+type capData struct {
+	Effective   uint32
+	Permitted   uint32
+	Inheritable uint32
+}
+
 func timespec(ns int64) []byte {
 	b := make([]byte, 16)
 	binary.LittleEndian.PutUint64(b[0:], uint64(ns/1e9))
@@ -763,7 +786,6 @@ func registerProcSyscalls() {
 	})
 
 	reg(SYS_GETRUSAGE, func(t *Task, a *[6]uint64) (uint64, Errno) {
-		b := make([]byte, 144)
 		var ut int64
 
 		switch int32(a[0]) {
@@ -775,17 +797,22 @@ func registerProcSyscalls() {
 			ut = t.utime
 		}
 
-		copy(b[0:], timeval(ut))
-		binary.LittleEndian.PutUint64(b[32:], t.proc.mm.rss()*4)
+		ru := rusage{
+			Utime:  [2]int64{ut / 1e9, ut % 1e9 / 1e3},
+			Maxrss: int64(t.proc.mm.rss() * 4),
+		}
+
+		b, _ := binary.Append(nil, binary.LittleEndian, &ru)
 
 		return uint64(int64(0)), t.proc.mm.copyOut(a[1], b)
 	})
 
 	reg(SYS_TIMES, func(t *Task, a *[6]uint64) (uint64, Errno) {
 		if a[0] != 0 {
-			b := make([]byte, 32)
-			binary.LittleEndian.PutUint64(b[0:], uint64(t.proc.utime/1e7))
-			binary.LittleEndian.PutUint64(b[16:], uint64(t.proc.cutime/1e7))
+			b, _ := binary.Append(nil, binary.LittleEndian, &tms{
+				Utime:  t.proc.utime / 1e7,
+				Cutime: t.proc.cutime / 1e7,
+			})
 
 			if err := t.proc.mm.copyOut(a[0], b); err != 0 {
 				return fail(err)
@@ -1085,12 +1112,8 @@ func registerProcSyscalls() {
 
 	reg(SYS_CAPGET, func(t *Task, a *[6]uint64) (uint64, Errno) {
 		if a[1] != 0 {
-			b := make([]byte, 24)
-
-			for i := range 2 {
-				binary.LittleEndian.PutUint32(b[i*12:], 0xffffffff)
-				binary.LittleEndian.PutUint32(b[i*12+4:], 0xffffffff)
-			}
+			all := capData{Effective: 0xffffffff, Permitted: 0xffffffff}
+			b, _ := binary.Append(nil, binary.LittleEndian, [2]capData{all, all})
 
 			return uint64(int64(0)), t.proc.mm.copyOut(a[1], b)
 		}

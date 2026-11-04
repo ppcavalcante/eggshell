@@ -250,11 +250,7 @@ func setupStack(mm *MM, img *elfImage, base uint64, path string, argv, envp []st
 	pos -= uint64(len(vec) * 8)
 	pos &^= 15
 
-	buf := make([]byte, len(vec)*8)
-
-	for i, v := range vec {
-		binary.LittleEndian.PutUint64(buf[i*8:], v)
-	}
+	buf, _ := binary.Append(nil, binary.LittleEndian, vec)
 
 	if e := mm.copyOut(pos, buf); e != 0 {
 		err = e

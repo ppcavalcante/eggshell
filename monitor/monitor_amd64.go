@@ -120,6 +120,12 @@ type ExecCtx struct {
 	g_sp uint64
 }
 
+// descriptorTable represents the GDTR and IDTR registers.
+type descriptorTable struct {
+	Limit uint16
+	Base  uint64
+}
+
 // taskState represents the 64-bit Task State Segment.
 type taskState struct {
 	_ uint32
@@ -236,8 +242,7 @@ func Init(tscFrequency uint64) error {
 	gdt[5] = limit&0xffff | (tssAddr&0xffffff)<<16 | 0x89<<40 | (limit>>16&0xf)<<48 | (tssAddr>>24&0xff)<<56
 	gdt[6] = tssAddr >> 32
 
-	binary.LittleEndian.PutUint16(c.gdtr[0:], uint16(len(gdt)*8-1))
-	binary.LittleEndian.PutUint64(c.gdtr[2:], gdtAddr)
+	binary.Encode(c.gdtr[:], binary.LittleEndian, &descriptorTable{uint16(len(gdt)*8 - 1), gdtAddr})
 	lgdt(&c.gdtr)
 	ltr(tssSel)
 
@@ -257,8 +262,7 @@ func Init(tscFrequency uint64) error {
 		}
 	}
 
-	binary.LittleEndian.PutUint16(uIDTR[0:], uint16(len(idt)*8-1))
-	binary.LittleEndian.PutUint64(uIDTR[2:], idtAddr)
+	binary.Encode(uIDTR[:], binary.LittleEndian, &descriptorTable{uint16(len(idt)*8 - 1), idtAddr})
 
 	// system call instruction: EFER.SCE, also enable NX (EFER.NXE)
 	wrmsr(efer, rdmsr(efer)|1<<0|1<<11)
