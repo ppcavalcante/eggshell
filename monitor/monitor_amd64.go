@@ -120,6 +120,20 @@ type ExecCtx struct {
 	g_sp uint64
 }
 
+// taskState represents the 64-bit Task State Segment.
+type taskState struct {
+	_ uint32
+	// ring 0-2 stacks
+	RSP [3]uint64
+	_   uint64
+	// interrupt stacks (IST1-IST7)
+	IST [7]uint64
+	_   uint64
+	_   uint16
+	// I/O permission bitmap offset
+	IOPB uint16
+}
+
 // cpu represents the monitor state of a processor.
 //
 // For now a single instance (BSP) exists, the trap entry points locate it
@@ -133,7 +147,7 @@ type cpu struct {
 	// GDT with this processor TSS, which holds its ring 0 stack
 	gdt    [7]uint64
 	gdtr   [16]byte
-	tss    [26]uint32
+	tss    [104]byte
 	kstack [kernelStackSize]byte
 	// interrupt stack for NMI, #DF and #MC, which can occur in ring 0
 	// with the user stack pointer (see enter)
@@ -202,7 +216,6 @@ func Init(tscFrequency uint64) error {
 	// GDT: TamaGo kernel selectors plus user segments and TSS
 	c := &bsp
 	gdt := &c.gdt
-	tss := &c.tss
 
 	gdt[0] = 0
 	gdt[1] = 0x00209a0000000000 // kernel code (64-bit)
@@ -214,15 +227,12 @@ func Init(tscFrequency uint64) error {
 
 	// TSS: ring 0 stack for interrupts from ring 3, interrupt stack (IST1)
 	// for NMI, #DF and #MC, no I/O permissions
-	rsp0 := (kstackAddr + kernelStackSize - 64) &^ 15
-	tss[1] = uint32(rsp0)
-	tss[2] = uint32(rsp0 >> 32)
-	ist1 := (istackAddr + uint64(len(c.istack)) - 64) &^ 15
-	tss[9] = uint32(ist1)
-	tss[10] = uint32(ist1 >> 32)
-	tss[25] = 104 << 16
+	tss := taskState{IOPB: uint16(len(c.tss))}
+	tss.RSP[0] = (kstackAddr + kernelStackSize - 64) &^ 15
+	tss.IST[0] = (istackAddr + uint64(len(c.istack)) - 64) &^ 15
+	binary.Encode(c.tss[:], binary.LittleEndian, &tss)
 
-	limit := uint64(103)
+	limit := uint64(len(c.tss) - 1)
 	gdt[5] = limit&0xffff | (tssAddr&0xffffff)<<16 | 0x89<<40 | (limit>>16&0xf)<<48 | (tssAddr>>24&0xff)<<56
 	gdt[6] = tssAddr >> 32
 
