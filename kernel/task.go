@@ -7,6 +7,7 @@ package kernel
 
 import (
 	"crypto/rand"
+	"fmt"
 	"path"
 	"runtime/debug"
 	"strings"
@@ -308,7 +309,14 @@ func (t *Task) exception(tr trap) {
 			return
 		case ENOMEM:
 			// no page to resolve the fault, as the Linux OOM killer
-			printk("kernel: out of memory, killing pid %d (%s) on fault at %#x\n", t.proc.pid, t.proc.comm, tr.addr)
+			msg := fmt.Sprintf("kernel: out of memory, killing pid %d (%s) on fault at %#x\n", t.proc.pid, t.proc.comm, tr.addr)
+			printk("%s", msg)
+
+			// also report it on the process terminal (e.g. SSH session)
+			if tty := ctty(t.proc); tty != nil && tty.master {
+				tty.output([]byte(msg))
+			}
+
 			t.forceSignal(SIGKILL, SI_KERNEL, tr.addr)
 			return
 		}
