@@ -8,8 +8,8 @@ programs or Go programs (including the Go toolchain), and programs dynamically
 linked against the [musl](https://musl.libc.org) C library.
 
 While TamaGo remains committed to promote pure Go unikernels, this project is
-an experiment to address uses cases where the need for a full operating environment
-is unavoidable, such as running the Go compiler.
+an experiment to address uses cases where the need for a full operating
+environment is unavoidable, such as running the Go compiler.
 
 > [!WARNING]
 > This project is at its early stages and therefore experimental.
@@ -75,6 +75,31 @@ scheduler.
  │ network   virtio-net (go-net) + gVisor                   │
  └──────────────────────────────────────────────────────────┘
 ```
+
+Security
+========
+
+Security
+========
+
+The Go kernel does not use `unsafe` operations, so system call handling, which
+processes untrusted data from user processes, is free of memory corruption bug
+classes such as buffer overflows, use-after-free and type confusion.
+
+A kernel panic while servicing a system call terminates the calling process
+rather than the kernel. Processes are isolated from the kernel by hardware,
+they run in ring 3 and the kernel is mapped supervisor-only in their address
+space.
+
+The trusted base beyond the kernel code is limited to the monitor assembly
+(privilege switch), page table setup and the Go runtime, along with the TamaGo
+package and network stack, with just 4 direct dependencies (see
+[go.mod](https://github.com/usbarmory/eggshell/blob/main/go.mod)).
+
+Finally, a Go kernel provides the opportunity to play with layers in an
+unconventional way. The SSH server is pure Go code running in the kernel,
+serving a pty to user mode processes, trading the privilege separation of a
+conventional user mode daemon for a memory-safe network-facing parser.
 
 Building the compiler
 =====================
