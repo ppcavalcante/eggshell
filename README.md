@@ -79,9 +79,6 @@ scheduler.
 Security
 ========
 
-Security
-========
-
 The Go kernel does not use `unsafe` operations, so system call handling, which
 processes untrusted data from user processes, is free of memory corruption bug
 classes such as buffer overflows, use-after-free and type confusion.
