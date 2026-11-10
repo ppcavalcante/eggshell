@@ -1447,6 +1447,12 @@ func registerFSSyscalls() {
 		return uint64(int64(0)), t.statfs(a[1], f.stat())
 	})
 
+	// unsupported for any file, callers (e.g. Go io.Copy) fall back to read
+	// and write
+	reg(SYS_SPLICE, func(t *Task, a *[6]uint64) (uint64, Errno) {
+		return fail(EINVAL)
+	})
+
 	reg(SYS_SENDFILE, func(t *Task, a *[6]uint64) (uint64, Errno) {
 		out, err := t.file(a[0])
 
