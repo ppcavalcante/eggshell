@@ -178,7 +178,7 @@ func (mm *MM) unmapPages(start, end uint64) {
 		pte.store(0)
 	})
 
-	invalidateTLB()
+	invalidateTLB(mm)
 }
 
 func (mm *MM) freeTables(table uint64, level int) {
@@ -197,6 +197,9 @@ func (mm *MM) freeTables(table uint64, level int) {
 	putPage(table)
 }
 
+// page table roots of released address spaces, still in use by a processor
+var zombieRoots []uint64
+
 // release drops a reference to the address space, freeing its resources
 // when unused.
 func (mm *MM) release() {
@@ -208,8 +211,16 @@ func (mm *MM) release() {
 
 	mm.writeBack(0, userMax)
 	mm.unmapPages(0, userMax)
-	mm.archRelease()
-	mm.freeTables(mm.root, ptLevels-1)
+
+	// page tables still loaded by a processor are freed by a later release
+	zombieRoots = slices.DeleteFunc(append(zombieRoots, mm.root), func(root uint64) bool {
+		if rootInUse(root) {
+			return false
+		}
+
+		mm.freeTables(root, ptLevels-1)
+		return true
+	})
 
 	for _, v := range mm.vmas {
 		v.unrefFile()
@@ -497,7 +508,7 @@ func (mm *MM) mprotect(addr uint64, length uint64, prot int) Errno {
 		}
 	})
 
-	invalidateTLB()
+	invalidateTLB(mm)
 
 	return 0
 }
@@ -591,7 +602,7 @@ func (mm *MM) mremap(old uint64, oldSize uint64, newSize uint64, flags int, newA
 		pte.store(m.pte)
 	}
 
-	invalidateTLB()
+	invalidateTLB(mm)
 
 	return newAddr, 0
 }

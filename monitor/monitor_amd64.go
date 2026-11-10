@@ -14,8 +14,12 @@
 //
 // While a context runs, the monitor installs its own IDT (all vectors trap
 // back to Go) and the user FS base; a GDT with user segments and a TSS (ring 0
-// stack for interrupts from ring 3) is installed once by Init, keeping the
-// TamaGo kernel selectors.
+// stack for interrupts from ring 3), keeping the TamaGo kernel selectors, is
+// installed on each processor before it first runs a context.
+//
+// Contexts run on all processors, the monitor state of each one is located by
+// exec through the TSC_AUX MSR (RDTSCP) and by the entry points, which have no
+// free register, through the kernel GS base (SWAPGS).
 //
 // Floating point state: all state components enabled in XCR0 (x87, SSE, AVX
 // and, when present, AVX-512) are restored with XRSTOR when a context is
@@ -26,10 +30,11 @@
 //
 // The LAPIC timer (vector TimerVector) preempts running contexts.
 //
-// Device interrupts received while a context runs are relayed, once the TamaGo
-// IDT is restored, as software interrupts of the same vector. They reach the
-// TamaGo interrupt handler (amd64.CPU.ServiceInterrupts), which acknowledges
-// them once serviced, as if received while Go code runs.
+// Device interrupts (and IPIs) received while a context runs are relayed, on
+// the same processor once the TamaGo IDT is restored, as software interrupts of
+// the same vector. They reach the TamaGo interrupt handler
+// (amd64.CPU.ServiceInterrupts), which acknowledges them once serviced, as if
+// received while Go code runs.
 //
 // This package is only meant to be used with `GOOS=tamago` as
 // supported by the TamaGo framework for bare metal Go, see
@@ -40,10 +45,9 @@ import (
 	"encoding/binary"
 	"fmt"
 	"strings"
-	"sync"
+	"sync/atomic"
 
 	"github.com/usbarmory/tamago/amd64"
-	"github.com/usbarmory/tamago/amd64/lapic"
 )
 
 const (
@@ -68,10 +72,15 @@ const (
 	userCS   = 0x20 | ring3
 	tssSel   = 0x28 | ring0
 
-	efer   = 0xc0000080
-	star   = 0xc0000081
-	lstar  = 0xc0000082
-	sfmask = 0xc0000084
+	efer         = 0xc0000080
+	star         = 0xc0000081
+	lstar        = 0xc0000082
+	sfmask       = 0xc0000084
+	kernelGSBase = 0xc0000102
+	tscAux       = 0xc0000103
+
+	// SYSRET selectors: SS = STAR[63:48]+8 (userDS), CS = STAR[63:48]+16 (userCS)
+	starVal = (kernelDS|ring3)<<48 | kernelCS<<32
 
 	kernelStackSize = 32 * 1024
 
@@ -141,14 +150,17 @@ type taskState struct {
 }
 
 // cpu represents the monitor state of a processor.
-//
-// For now a single instance (BSP) exists, the trap entry points locate it
-// statically (see monitor_amd64.s).
 type cpu struct {
 	// running context, only set by exec
 	ctx uintptr
 	// system call entry scratch register
 	scratch uint64
+	// loaded page table root, only set by exec
+	cr3 uint64
+	// TLB flush request before the next context execution
+	forceCR3 uint32
+	// timeslice deadline (TSC)
+	armedTSC uint64
 
 	// GDT with this processor TSS, which holds its ring 0 stack
 	gdt    [7]uint64
@@ -158,18 +170,11 @@ type cpu struct {
 	// interrupt stack for NMI, #DF and #MC, which can occur in ring 0
 	// with the user stack pointer (see enter)
 	istack [4096]byte
-
-	// TLB flush request before the next context execution
-	forceCR3 uint8
-	// timeslice deadline (TSC)
-	armedTSC uint64
 }
 
 var (
-	mux sync.Mutex
-
-	// boot processor monitor state
-	bsp cpu
+	// processors monitor state, indexed by LAPIC ID
+	cpus []*cpu
 
 	// monitor IDT, shared by all processors
 	idt   [256 * 2]uint64
@@ -184,7 +189,6 @@ var (
 	// Go runtime MXCSR
 	kernelMXCSR uint32 = 0x1f80
 
-	kernelCR3 uint64
 	defaultFP FPState
 
 	// TSC frequency (Hz)
@@ -193,10 +197,10 @@ var (
 
 // defined in monitor_amd64.s
 func aligned64(fp *FPState) bool
-func exec(ctx *ExecCtx)
-func syscallEntryAddr() uint64
+func exec(ctx *ExecCtx, ns uint64, cycles uint64)
 func vectorsAddr() uint64
 func tableAddrs(c *cpu) (gdt uint64, tss uint64, idt uint64, kstack uint64, istack uint64)
+func ipi(id uint32, vector uint32)
 func relay(n uint64)
 
 // vectorAddr returns the monitor IDT entry point for the argument vector.
@@ -210,17 +214,10 @@ func gateDescriptor(addr uint64, dpl uint64) (lo, hi uint64) {
 	return
 }
 
-// Init installs the user mode GDT, TSS, IDT and system call MSRs, the
-// argument is the TSC frequency used for timeslice accounting.
-func Init(tscFrequency uint64) error {
-	if tscFrequency == 0 {
-		return fmt.Errorf("invalid TSC frequency")
-	}
-
-	tscHz = tscFrequency
-
+// newCPU returns the monitor state of a processor, with its GDT and TSS.
+func newCPU() *cpu {
 	// GDT: TamaGo kernel selectors plus user segments and TSS
-	c := &bsp
+	c := &cpu{}
 	gdt := &c.gdt
 
 	gdt[0] = 0
@@ -229,7 +226,7 @@ func Init(tscFrequency uint64) error {
 	gdt[3] = 0x0000f20000000000 // user data (DPL 3)
 	gdt[4] = 0x0020fa0000000000 // user code (64-bit, DPL 3)
 
-	gdtAddr, tssAddr, idtAddr, kstackAddr, istackAddr := tableAddrs(c)
+	gdtAddr, tssAddr, _, kstackAddr, istackAddr := tableAddrs(c)
 
 	// TSS: ring 0 stack for interrupts from ring 3, interrupt stack (IST1)
 	// for NMI, #DF and #MC, no I/O permissions
@@ -243,8 +240,26 @@ func Init(tscFrequency uint64) error {
 	gdt[6] = tssAddr >> 32
 
 	binary.Encode(c.gdtr[:], binary.LittleEndian, &descriptorTable{uint16(len(gdt)*8 - 1), gdtAddr})
-	lgdt(&c.gdtr)
-	ltr(tssSel)
+
+	return c
+}
+
+// Init prepares the user mode GDT, TSS, IDT and system call MSRs of all
+// processors, the argument is the TSC frequency used for timeslice accounting.
+func Init(tscFrequency uint64) error {
+	if tscFrequency == 0 {
+		return fmt.Errorf("invalid TSC frequency")
+	}
+
+	tscHz = tscFrequency
+
+	cpus = make([]*cpu, amd64.NumCPU())
+
+	for i := range cpus {
+		cpus[i] = newCPU()
+	}
+
+	_, _, idtAddr, _, _ := tableAddrs(cpus[0])
 
 	// IDT: every vector returns to Go, breakpoints allowed from ring 3
 	for i := range 256 {
@@ -263,16 +278,6 @@ func Init(tscFrequency uint64) error {
 	}
 
 	binary.Encode(uIDTR[:], binary.LittleEndian, &descriptorTable{uint16(len(idt)*8 - 1), idtAddr})
-
-	// system call instruction: EFER.SCE, also enable NX (EFER.NXE)
-	wrmsr(efer, rdmsr(efer)|1<<0|1<<11)
-
-	// SYSRET selectors: SS = STAR[63:48]+8 (userDS), CS = STAR[63:48]+16 (userCS)
-	wrmsr(star, uint64(kernelDS|ring3)<<48|uint64(kernelCS)<<32)
-	wrmsr(lstar, syscallEntryAddr())
-
-	// mask TF, IF, DF, IOPL, NT, AC on entry
-	wrmsr(sfmask, 0x47700)
 
 	cpu := amd64.CPU{}
 
@@ -299,7 +304,6 @@ func Init(tscFrequency uint64) error {
 	// RDFSBASE/WRFSBASE: CPUID.(EAX=07H,ECX=0):EBX[0], enabled through
 	// CR4.FSGSBASE, cheaper than the FS base MSR on each context switch
 	if _, ebx, _, _ := cpu.CPUID(7, 0); ebx&1 != 0 {
-		writeCR4(readCR4() | cr4FSGSBASE)
 		hasFSGSBASE = 1
 	}
 
@@ -308,71 +312,56 @@ func Init(tscFrequency uint64) error {
 	binary.LittleEndian.PutUint32(defaultFP[24:], 0x1f80)     // MXCSR
 	binary.LittleEndian.PutUint32(defaultFP[28:], 0x0000ffff) // MXCSR_MASK
 
-	kernelCR3 = readCR3()
-
-	// LAPIC timer: one-shot, divide by 1
-	write32(amd64.LAPIC_BASE+lapic.LAPIC_LVT_TIMER_DIV, 0b1011)
-	write32(amd64.LAPIC_BASE+lapic.LAPIC_LVT_TIMER, TimerVector)
-
 	return nil
 }
 
-// InvalidateTLB requests a TLB flush before the next context execution.
-func InvalidateTLB() {
-	bsp.forceCR3 = 1
-}
+// InvalidateTLB flushes the TLB entries for the argument page table root on
+// all processors: those running a context with it are interrupted, and waited
+// for, all flush their TLB before their next context execution.
+func InvalidateTLB(root uint64) {
+	for _, c := range cpus {
+		atomic.StoreUint32(&c.forceCR3, 1)
+	}
 
-// ReleaseRoot switches to the kernel page tables if the argument page table
-// root is in use, so that it can be freed.
-func ReleaseRoot(root uint64) {
-	if readCR3() == root {
-		writeCR3(kernelCR3)
+	// exec sets ctx before reading forceCR3, both with a full barrier
+	for id, c := range cpus {
+		if ctx := atomic.LoadUintptr(&c.ctx); ctx != 0 && atomic.LoadUint64(&c.cr3) == root {
+			ipi(uint32(id), TimerVector)
+
+			for atomic.LoadUintptr(&c.ctx) == ctx {
+			}
+		}
 	}
 }
 
-// EOI acknowledges the current LAPIC interrupt.
-func EOI() {
-	write32(amd64.LAPIC_EOI, 0)
+// RootInUse returns whether the argument page table root is loaded by any
+// processor, which prevents its page tables from being freed.
+func RootInUse(root uint64) bool {
+	for _, c := range cpus {
+		if atomic.LoadUint64(&c.cr3) == root {
+			return true
+		}
+	}
+
+	return false
 }
 
-func armTimer(ns uint64) {
-	ns = min(ns, 0xffffffff)
-	write32(amd64.LAPIC_BASE+lapic.LAPIC_LVT_TIMER_INIT, uint32(ns))
-}
-
-// Run starts the execution context in ring 3, the execution yields back to the
-// invoking Go runtime only when exceptions are caught or the argument timer
-// expires.
+// Run starts the execution context in ring 3, on the calling processor, the
+// execution yields back to the invoking Go runtime only when exceptions are
+// caught or the argument timer expires.
 func (ctx *ExecCtx) Run(quantum uint64) {
-	mux.Lock()
-	defer mux.Unlock()
-
 	if ctx.FP == nil || !aligned64(ctx.FP) {
 		panic("misaligned or missing FP state")
 	}
 
-	if quantum > 0 {
-		if now := rdtsc(); now >= bsp.armedTSC {
-			armTimer(quantum)
-			bsp.armedTSC = now + quantum*tscHz/1e9
-		}
-	}
-
-	exec(ctx)
-
-	if v := ctx.Vector; v >= 32 && v < TimerVector {
-		relay(v)
-	}
-
-	bsp.ctx = 0
+	exec(ctx, min(quantum, 0xffffffff), quantum*tscHz/1e9)
 }
 
-// Idle halts the processor until the argument number of nanoseconds elapse,
-// or any other interrupt is received.
-func Idle(ns uint64) {
-	bsp.armedTSC = 0
-	ns = min(ns, 0xffffffff)
-	idleHalt(uint32(ns))
+// Alarm arms the LAPIC timer of the calling processor to raise TimerVector
+// (amd64.IRQ_WAKEUP) after the argument number of nanoseconds, to wake it up
+// from amd64.CPU.WaitInterrupt.
+func Alarm(ns uint64) {
+	alarm(uint32(min(ns, 0xffffffff)))
 }
 
 // String returns the string form of the execution context registers.

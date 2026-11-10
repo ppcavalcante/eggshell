@@ -109,11 +109,7 @@ func procRootEntries() map[string]func() *Inode {
 			})
 		},
 		"meminfo": func() *Inode { return synthText(meminfo) },
-		"cpuinfo": func() *Inode {
-			return synthText(func() string {
-				return cpuinfo
-			})
-		},
+		"cpuinfo": func() *Inode { return synthText(cpuinfo) },
 		"uptime": func() *Inode {
 			return synthText(func() string {
 				up := float64(nanotime()) / 1e9
@@ -140,8 +136,13 @@ func procRootEntries() map[string]func() *Inode {
 		},
 		"stat": func() *Inode {
 			return synthText(func() string {
-				return fmt.Sprintf("cpu  0 0 0 0 0 0 0 0 0 0\ncpu0 0 0 0 0 0 0 0 0 0 0\nbtime %d\nprocesses %d\nprocs_running 1\nprocs_blocked 0\n",
-					bootTime.Unix(), nextPID-1)
+				s := "cpu  0 0 0 0 0 0 0 0 0 0\n"
+
+				for i := range runtime.GOMAXPROCS(0) {
+					s += fmt.Sprintf("cpu%d 0 0 0 0 0 0 0 0 0 0\n", i)
+				}
+
+				return s + fmt.Sprintf("btime %d\nprocesses %d\nprocs_running 1\nprocs_blocked 0\n", bootTime.Unix(), nextPID-1)
 			})
 		},
 		"sys": func() *Inode {

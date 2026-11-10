@@ -49,7 +49,7 @@ def qemu_cmd(args, linux):
     cmd = [
         args.qemu,
         "-machine", f"microvm,x-option-roms=on,pit={pit},pic=off,rtc=on",
-        "-smp", "1",
+        "-smp", str(args.smp),
         "-global", "virtio-mmio.force-legacy=false",
         "-cpu", cpu, "-no-reboot",
         "-m", "2G", "-nographic", "-monitor", "none", "-serial", "stdio",
@@ -235,6 +235,7 @@ def main():
     ap.add_argument("--qemu", default="qemu-system-x86_64")
     ap.add_argument("--cc", default=os.environ.get("CC", "cc"))
     ap.add_argument("--tcg", action="store_true", help="do not use KVM")
+    ap.add_argument("--smp", type=int, default=1, help="number of processors")
     ap.add_argument("--timeout", type=int, default=3600, help="seconds per guest run")
     ap.add_argument("--only", choices=["eggshell", "linux"])
     ap.add_argument("--no-build", action="store_true", help="reuse bench/build")

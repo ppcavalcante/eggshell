@@ -70,7 +70,7 @@ scheduler.
  │ kernel    Linux ABI syscalls, processes, signals, VFS,   │
  │           TTY, pipes, epoll, futex, sockets              │ TamaGo / Go runtime
  │                                                          │
- │ board     QEMU microvm                                   │
+ │ board     any TamaGo amd64 target (microVM | UEFI)       │
  │                                                          │
  │ network   virtio-net (go-net) + gVisor                   │
  └──────────────────────────────────────────────────────────┘
@@ -183,8 +183,10 @@ for instructions and options.
 Current limitations
 ===================
 
-* While TamaGo supports SMP operation, for now supervision of userspace code
-  remains a single-core only affair.
+* User mode code runs in parallel on all processors (e.g. `make qemu SMP=4`),
+  while the kernel (system calls, faults, signals) is serialized by a single
+  lock, this means that for now SMP benefits CPU bound workloads, not system call
+  bound ones (e.g.  network servers).
 
 * Only single user support, no isolation among users and any identity operation
   is a no-op.
@@ -198,6 +200,21 @@ Current limitations
 
 * The filesystem is in-memory and therefore all modifications are volatile
   across reboots.
+
+History
+=======
+
+[Biscuit](https://github.com/mit-pdos/biscuit) is a research project which
+implemented a POSIX-subset OS kernel in Go, running C programs recompiled
+against its own C library.
+
+Biscuit was one of the original inspirations for
+[TamaGo](https://github.com/usbarmory/tamago), as it proved that the Go
+runtime can be adapted for bare metal execution, while TamaGo focused on pure
+Go unikernels for their security benefits.
+
+Several years later eggshell builds on TamaGo's maturity to implement an OS
+kernel which runs unmodified Linux executables.
 
 License
 =======

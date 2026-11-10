@@ -9,6 +9,7 @@ import (
 	"debug/elf"
 	"encoding/binary"
 	"fmt"
+	"runtime"
 	"time"
 
 	"github.com/usbarmory/eggshell/monitor"
@@ -17,6 +18,9 @@ import (
 const (
 	elfMachine = elf.EM_X86_64
 	utsMachine = "x86_64"
+
+	// advertised in /proc/cpuinfo
+	flags = "fpu tsc msr pae cx8 apic sep cmov pat clflush mmx fxsr sse sse2 syscall nx lm"
 
 	// load bias for position independent executables (outside the kernel
 	// range, see mmu_amd64.go)
@@ -97,14 +101,13 @@ func (t *Task) resetRegs(entry uint64, sp uint64) {
 }
 
 // enterUser runs the task in ring 3 until a trap.
-func (t *Task) enterUser(mm *MM) trap {
+func (t *Task) enterUser() trap {
 	ctx := &t.ctx
 
 	if ctx.FP == nil {
 		ctx.FP = monitor.NewFPState()
 	}
 
-	ctx.CR3 = mm.rootReg()
 	ctx.Run(uint64(quantum))
 
 	if ctx.CS&3 != 3 {
@@ -114,11 +117,8 @@ func (t *Task) enterUser(mm *MM) trap {
 	switch v := ctx.Vector; {
 	case v == monitor.VectorSyscall:
 		return trap{kind: trapSyscall}
-	case v == monitor.TimerVector:
-		monitor.EOI()
-		return trap{kind: trapPreempt}
 	case v >= 32:
-		// device interrupt, relayed by the monitor to its handler
+		// timer or device interrupt, relayed by the monitor to its handler
 		return trap{kind: trapPreempt}
 	case v == 14:
 		// page fault, error code: P(0) W/R(1) U/S(2) RSVD(3) I/D(4)
@@ -597,4 +597,10 @@ func registerArchSyscalls() {
 	})
 }
 
-const cpuinfo = "processor\t: 0\nvendor_id\t: eggshell\nmodel name\t: QEMU x86-64\nflags\t\t: fpu tsc msr pae cx8 apic sep cmov pat clflush mmx fxsr sse sse2 syscall nx lm\n\n"
+func cpuinfo() (s string) {
+	for i := range runtime.GOMAXPROCS(0) {
+		s += fmt.Sprintf("processor\t: %d\nvendor_id\t: eggshell\nmodel name\t: QEMU x86-64\nflags\t\t: %s\n\n", i, flags)
+	}
+
+	return
+}

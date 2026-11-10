@@ -156,8 +156,8 @@ func getRandom(b []byte) {
 	rand.Read(b)
 }
 
-func invalidateTLB() {
-	monitor.InvalidateTLB()
+func invalidateTLB(mm *MM) {
+	monitor.InvalidateTLB(mm.rootReg())
 }
 
 // spawnInit creates the first process.
@@ -241,11 +241,19 @@ func (t *Task) run() {
 			break
 		}
 
+		// user mode runs without the kernel lock, on any processor
+		t.ctx.CR3 = t.proc.mm.rootReg()
 		start := nanotime()
-		tr := t.enterUser(t.proc.mm)
+		klock.Unlock()
+		tr := t.enterUser()
+		klock.Lock()
 		elapsed := nanotime() - start
 		t.utime += elapsed
 		t.proc.utime += elapsed
+
+		if t.dead {
+			break
+		}
 
 		switch tr.kind {
 		case trapSyscall:
@@ -615,21 +623,28 @@ func (t *Task) execve(file string, argv []string, envp []string, depth int) Errn
 	}
 
 	// point of no return: terminate other threads
-	for _, o := range p.threads {
+	others := p.threads
+	p.threads = []*Task{t}
+
+	for _, o := range others {
 		if o != t {
 			o.dead = true
 			o.clearTID = 0
 		}
 	}
 
-	p.threads = []*Task{t}
+	// wait for them to leave user mode before releasing the address space
+	for _, o := range others {
+		for o != t && tasks[o.tid] == o {
+			yield()
+		}
+	}
 
 	if p.mm != nil {
 		p.mm.release()
 	}
 
 	p.mm = mm
-	invalidateTLB()
 
 	if !p.vforkDone {
 		p.vforkDone = true

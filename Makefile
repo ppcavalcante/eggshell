@@ -24,9 +24,10 @@ NETDEV_TAP := tap,id=net0,ifname=tap0,script=no,downscript=no
 NETDEV_USER := user,id=net0,net=10.0.0.0/24,host=10.0.0.2,dhcpstart=10.0.0.1
 NETDEV_USER := $(NETDEV_USER),hostfwd=tcp:127.0.0.1:2222-:22,hostfwd=tcp::6379-:6379
 NETDEV ?= $(if $(TAP0),$(NETDEV_TAP),$(NETDEV_USER))
+SMP ?= 1
 
 QEMU ?= qemu-system-x86_64 -machine microvm,x-option-roms=on,pit=off,pic=off,rtc=on \
-        -smp 1 \
+        -smp $(SMP) \
         -global virtio-mmio.force-legacy=false \
         $(if $(KVM),-enable-kvm) -cpu $(CPU) -no-reboot \
         -m 2G -nographic -monitor none -serial stdio \

@@ -162,8 +162,8 @@ func (mm *MM) archInitFork() Errno {
 	return mm.archInit()
 }
 
-// archRelease ensures that the processor no longer uses the address space
-// page tables before they are freed.
-func (mm *MM) archRelease() {
-	monitor.ReleaseRoot(mm.root)
+// rootInUse returns whether page tables are in use by any processor, which
+// prevents them from being freed.
+func rootInUse(root uint64) bool {
+	return monitor.RootInUse(root)
 }

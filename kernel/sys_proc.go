@@ -881,7 +881,7 @@ func registerProcSyscalls() {
 		if a[1] < 8 {
 			return fail(EINVAL)
 		}
-		return uint64(int64(8)), t.proc.mm.writeU64(a[2], 1)
+		return uint64(int64(8)), t.proc.mm.writeU64(a[2], 1<<runtime.GOMAXPROCS(0)-1)
 	})
 
 	reg(SYS_SCHED_GETPARAM, func(t *Task, a *[6]uint64) (uint64, Errno) {

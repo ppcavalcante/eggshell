@@ -7,7 +7,6 @@ package microvm
 
 import (
 	"fmt"
-	"math"
 	"runtime"
 	"runtime/debug"
 	"runtime/goos"
@@ -28,6 +27,8 @@ const (
 
 	// isa-debug-exit device (-device isa-debug-exit,iobase=0xf4)
 	DEBUG_EXIT_PORT = 0xf4
+
+	maxIdle = int64(10 * time.Millisecond)
 )
 
 var boardName = "microvm"
@@ -43,15 +44,20 @@ func PowerOff(code int) {
 	goos.Exit(int32(code))
 }
 
-// idle halts the processor until the next runtime deadline.
+// idle halts the processor until the next runtime deadline or IRQ_WAKEUP,
+// processors without deadline (0) halt for at most maxIdle, as they are not
+// woken up when goroutines become runnable on other processors (M's never
+// stop, see runtime.beforeIdle).
 func idle(until int64) {
-	if until == math.MaxInt64 {
-		// the console poller always has a pending timer
-		return
+	now := time.Now().UnixNano()
+
+	if until == 0 || until-now > maxIdle {
+		until = now + maxIdle
 	}
 
-	if d := until - time.Now().UnixNano(); d > 0 {
-		monitor.Idle(uint64(d))
+	if until > now {
+		monitor.Alarm(uint64(until - now))
+		CPU.WaitInterrupt()
 	}
 }
 
@@ -77,6 +83,10 @@ func Init(cfg *kernel.Config) error {
 
 	goos.Idle = idle
 	goos.Exit = exit
+
+	if n := runtime.NumCPU(); n > 1 {
+		preallocateMs(n)
+	}
 
 	// inform the Go runtime about its memory size
 	debug.SetMemoryLimit(int64(HeapSize()) * 7 / 8)

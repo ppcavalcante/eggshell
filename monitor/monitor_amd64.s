@@ -15,13 +15,22 @@
 // stack, enter records the stack pointer in the context (ExecCtx_g_sp) for
 // kreturn to return into exec, which restores it.
 
-#define FRAME_RFLAGS 0
-#define FRAME_R12 8
-#define FRAME_R13 16
-#define FRAME_R14 24
-#define FRAME_R15 32
-#define FRAME_FS 40
-#define FRAME_IDTR 48
+#define FRAME_ARG 0
+#define FRAME_RFLAGS 8
+#define FRAME_R12 16
+#define FRAME_R13 24
+#define FRAME_R14 32
+#define FRAME_R15 40
+#define FRAME_FS 48
+#define FRAME_IDTR 56
+#define FRAME_CPU 72
+#define FRAME_SIZE 80
+
+// GS relative (processor state, see cpuinit) store and load of AX
+#define GS_STORE_AX(off) BYTE $0x65; BYTE $0x48; BYTE $0x89; BYTE $0x04; BYTE $0x25; LONG $off
+#define GS_LOAD_AX(off) BYTE $0x65; BYTE $0x48; BYTE $0x8b; BYTE $0x04; BYTE $0x25; LONG $off
+
+#define WRMSRQ(msr, val) MOVQ val, AX; MOVQ AX, DX; SHRQ $32, DX; MOVL $msr, CX; WRMSR
 
 // SAVE_GPRS saves general purpose registers, but RAX and RSP, to the context
 // pointed by AX.
@@ -65,16 +74,105 @@ TEXT ·aligned64(SB),NOSPLIT,$0-9
 	SETEQ	ret+8(FP)
 	RET
 
-// func exec(ctx *ExecCtx)
-TEXT ·exec(SB),NOSPLIT,$64-8
-	MOVQ	ctx+0(FP), BX
-	MOVQ	$·bsp(SB), AX
-	MOVQ	BX, cpu_ctx(AX)
+// current returns in DI the monitor state of the calling processor, which is
+// initialized on first use, and in AX the TSC, interrupts must be disabled.
+TEXT ·current(SB),NOSPLIT|NOFRAME,$0
+	// TSC_AUX holds the processor index + 1, once initialized
+tsc:
+	RDTSCP
+	TESTL	CX, CX
+	JNZ	ready
+	CALL	·cpuinit(SB)
+	JMP	tsc
+ready:
+	SHLQ	$32, DX
+	ORQ	DX, AX
+	MOVQ	·cpus(SB), DI
+	MOVQ	-8(DI)(CX*8), DI
+	RET
 
+// cpuinit installs the monitor GDT and TSS, system call MSRs and LAPIC timer
+// configuration on the calling processor, with its state found by LAPIC ID.
+TEXT ·cpuinit(SB),NOSPLIT|NOFRAME,$0
+	MOVL	$const_lapicID, AX
+	MOVL	(AX), SI
+	SHRL	$24, SI
+	MOVQ	·cpus(SB), DI
+	MOVQ	(DI)(SI*8), DI
+
+	LGDT	cpu_gdtr(DI)
+	MOVW	$const_tssSel, AX
+	LTR	AX
+
+	// system call instruction: EFER.SCE, also enable NX (EFER.NXE)
+	MOVL	$const_efer, CX
+	RDMSR
+	ORL	$(1<<0|1<<11), AX
+	WRMSR
+
+	WRMSRQ(const_star, $const_starVal)
+	WRMSRQ(const_lstar, $·syscallEntry(SB))
+	// mask TF, IF, DF, IOPL, NT, AC on entry
+	WRMSRQ(const_sfmask, $0x47700)
+	WRMSRQ(const_kernelGSBase, DI)
+	INCL	SI
+	WRMSRQ(const_tscAux, SI)
+
+	CMPB	·hasFSGSBASE(SB), $0
+	JEQ	timer
+	MOVQ	CR4, AX
+	ORQ	$const_cr4FSGSBASE, AX
+	MOVQ	AX, CR4
+timer:
+	// LAPIC timer: one-shot, divide by 1
+	MOVL	$const_lapicTimerDiv, AX
+	MOVL	$0xb, (AX)
+	MOVL	$const_lapicTimer, AX
+	MOVL	$const_TimerVector, (AX)
+	RET
+
+// func ipi(id uint32, vector uint32)
+TEXT ·ipi(SB),NOSPLIT,$0-8
+	MOVL	id+0(FP), BX
+	SHLL	$24, BX
+	MOVL	vector+4(FP), CX
+	PUSHFQ
+	CLI
+	MOVL	$const_lapicICRH, AX
+	MOVL	BX, (AX)
+	MOVL	$const_lapicICRL, AX
+	MOVL	CX, (AX)
+wait:
+	// delivery status
+	BTL	$12, (AX)
+	JCS	wait
+	POPFQ
+	RET
+
+// func exec(ctx *ExecCtx, ns uint64, cycles uint64)
+TEXT ·exec(SB),$80-24
 	PUSHFQ
 	POPQ	AX
 	MOVQ	AX, FRAME_RFLAGS(SP)
 	CLI
+
+	CALL	·current(SB)
+	MOVQ	DI, FRAME_CPU(SP)
+
+	// running context, with a full barrier (see InvalidateTLB)
+	MOVQ	ctx+0(FP), BX
+	MOVQ	BX, CX
+	XCHGQ	CX, cpu_ctx(DI)
+
+	// timeslice
+	CMPQ	AX, cpu_armedTSC(DI)
+	JB	armed
+	ADDQ	cycles+16(FP), AX
+	MOVQ	AX, cpu_armedTSC(DI)
+	MOVQ	ns+8(FP), AX
+	MOVL	$const_lapicTimerInit, CX
+	MOVL	AX, (CX)
+armed:
 
 	MOVQ	R12, FRAME_R12(SP)
 	MOVQ	R13, FRAME_R13(SP)
@@ -98,7 +196,11 @@ idt:
 	SIDT	FRAME_IDTR(SP)
 
 	// returns through kreturn
+	MOVQ	FRAME_CPU(SP), DI
 	CALL	·enter(SB)
+
+	MOVQ	FRAME_CPU(SP), DI
+	MOVQ	$0, cpu_ctx(DI)
 
 	CMPB	·hasFSGSBASE(SB), $0
 	JEQ	wrmsr
@@ -118,9 +220,27 @@ kidt:
 	MOVQ	FRAME_R14(SP), R14
 	MOVQ	FRAME_R15(SP), R15
 
+	// interrupts received by the context, on this processor: the
+	// preemption timer is acknowledged, others are relayed to the TamaGo
+	// IDT
+	MOVQ	ctx+0(FP), BX
+	MOVQ	ExecCtx_Vector(BX), AX
+	CMPQ	AX, $const_TimerVector
+	JA	done
+	JB	relay
+	MOVL	$const_lapicEOI, CX
+	MOVL	$0, (CX)
+	JMP	done
+relay:
+	CMPQ	AX, $32
+	JB	done
+	MOVQ	AX, FRAME_ARG(SP)
+	CALL	·relay(SB)
+done:
+
 	// frame pointer (saved above the frame by the prologue), restored
 	// before interrupts are enabled
-	MOVQ	64(SP), BP
+	MOVQ	FRAME_SIZE(SP), BP
 
 	MOVQ	FRAME_RFLAGS(SP), AX
 	PUSHQ	AX
@@ -151,18 +271,18 @@ uidt:
 	// monitor IDT
 	LIDT	·uIDTR(SB)
 
-	// address space
-	MOVQ	$·bsp(SB), CX
+	// address space (DI: processor state)
 	MOVQ	ExecCtx_CR3(BX), AX
 	MOVQ	CR3, DX
 	CMPQ	AX, DX
 	JNE	loadcr3
 
-	CMPB	cpu_forceCR3(CX), $0
+	CMPL	cpu_forceCR3(DI), $0
 	JEQ	fp
 loadcr3:
+	MOVL	$0, cpu_forceCR3(DI)
 	MOVQ	AX, CR3
-	MOVB	$0, cpu_forceCR3(CX)
+	MOVQ	AX, cpu_cr3(DI)
 fp:
 	// user floating point state (all enabled components)
 	MOVQ	ExecCtx_FP(BX), CX
@@ -217,9 +337,9 @@ iret:
 
 	IRETQ
 
+// kreturn is reached with the context pointer in AX.
 TEXT ·kreturn(SB),NOSPLIT|NOFRAME,$0
-	MOVQ	$·bsp(SB), BX
-	MOVQ	cpu_ctx(BX), BX
+	MOVQ	AX, BX
 
 	// user FS and GS base, which user mode can change with FSGSBASE
 	CMPB	·hasFSGSBASE(SB), $0
@@ -253,18 +373,23 @@ kmxcsr:
 	MOVQ	ExecCtx_g_sp(BX), SP
 	RET
 
-// the user one, hence the static references.
+// System call entry, with the user stack and no free register, the processor
+// state is reached through the kernel GS base.
 TEXT ·syscallEntry(SB),NOSPLIT|NOFRAME,$0
-	MOVQ	AX, ·bsp+cpu_scratch(SB)
-	MOVQ	·bsp+cpu_ctx(SB), AX
+	SWAPGS
+	GS_STORE_AX(cpu_scratch)
+	GS_LOAD_AX(cpu_ctx)
 
 	SAVE_GPRS
 	MOVQ	CX, ExecCtx_RIP(AX)
 	MOVQ	R11, ExecCtx_RFLAGS(AX)
 	MOVQ	SP, ExecCtx_RSP(AX)
 
-	MOVQ	·bsp+cpu_scratch(SB), BX
-	MOVQ	BX, ExecCtx_RAX(AX)
+	MOVQ	AX, BX
+	GS_LOAD_AX(cpu_scratch)
+	MOVQ	AX, ExecCtx_RAX(BX)
+	MOVQ	BX, AX
+	SWAPGS
 
 	MOVQ	$const_VectorSyscall, ExecCtx_Vector(AX)
 	MOVQ	$const_userCS, ExecCtx_CS(AX)
@@ -275,8 +400,9 @@ TEXT ·syscallEntry(SB),NOSPLIT|NOFRAME,$0
 // RIP, CS, RFLAGS, RSP, SS.
 TEXT ·intrCommon(SB),NOSPLIT|NOFRAME,$0
 	PUSHQ	AX
-	MOVQ	$·bsp(SB), AX
-	MOVQ	cpu_ctx(AX), AX
+	SWAPGS
+	GS_LOAD_AX(cpu_ctx)
+	SWAPGS
 
 	SAVE_GPRS
 
@@ -354,12 +480,6 @@ TEXT ·tableAddrs(SB),NOSPLIT,$0-48
 	MOVQ	AX, kstack+32(FP)
 	LEAQ	cpu_istack(BX), AX
 	MOVQ	AX, istack+40(FP)
-	RET
-
-// func syscallEntryAddr() uint64
-TEXT ·syscallEntryAddr(SB),NOSPLIT,$0-8
-	MOVQ	$·syscallEntry(SB), AX
-	MOVQ	AX, ret+0(FP)
 	RET
 
 // func relay(n uint64)
