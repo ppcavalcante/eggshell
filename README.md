@@ -166,6 +166,10 @@ ip addr add 10.0.0.2/24 dev tap0
 ip link set tap0 up
 ```
 
+The SSH server accepts, by default, unauthenticated connections. A
+`/root/.ssh/authorized_keys` file must be added to enforce authentication (see
+the next section for rootfs customization).
+
 Running your own application
 ----------------------------
 
