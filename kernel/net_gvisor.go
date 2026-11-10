@@ -391,7 +391,10 @@ func (s *inetSocket) sendto(t *Task, f *File, buf []byte, flags int, addr []byte
 		var r bytes.Reader
 		r.Reset(buf[written:])
 
+		// the network stack does not require klock
+		klock.Unlock()
 		n, err := s.ep.Write(&r, opts)
+		klock.Lock()
 		written += int(n)
 
 		if err == nil {
@@ -448,10 +451,12 @@ func (s *inetSocket) recvfrom(t *Task, f *File, buf []byte, flags int) (int, []b
 	for {
 		w := tcpip.SliceWriter(buf)
 
+		klock.Unlock()
 		res, err := s.ep.Read(&w, tcpip.ReadOptions{
 			Peek:           flags&MSG_PEEK != 0,
 			NeedRemoteAddr: s.stype == SOCK_DGRAM,
 		})
+		klock.Lock()
 
 		if err == nil {
 			var from []byte

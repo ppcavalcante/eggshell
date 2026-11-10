@@ -63,7 +63,7 @@ type Config struct {
 }
 
 var (
-	klock sync.Mutex
+	klock kmutex
 	kcond = sync.NewCond(&klock)
 
 	cfg      *Config
@@ -75,6 +75,20 @@ var (
 	// Log is the kernel log destination.
 	Log io.Writer
 )
+
+// kmutex is a mutex which spins before blocking, as its critical sections are
+// shorter than blocking and waking up a goroutine across processors.
+type kmutex struct{ sync.Mutex }
+
+func (m *kmutex) Lock() {
+	for range 2000 {
+		if m.TryLock() {
+			return
+		}
+	}
+
+	m.Mutex.Lock()
+}
 
 // timeslice for user mode preemption
 const quantum = 10 * time.Millisecond

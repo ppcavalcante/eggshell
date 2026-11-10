@@ -22,5 +22,5 @@ const (
 )
 
 // defined in amd64.s
-func alarm(count uint32)
+func alarm(count uint32, poll uint64, gap uint64) bool
 func xgetbv(index uint32) uint64

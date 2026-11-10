@@ -6,19 +6,33 @@
 #include "go_asm.h"
 #include "textflag.h"
 
-// func alarm(count uint32)
-TEXT ·alarm(SB),NOSPLIT,$0-4
+// func alarm(count uint32, poll uint64, gap uint64) bool
+TEXT ·alarm(SB),NOSPLIT,$0-25
 	MOVL	count+0(FP), BX
 	PUSHFQ
 	CLI
 
-	// the timeslice timer is reused (see exec)
 	CALL	·current(SB)
+
+	// a call past gap cycles from the last one starts an idle period
+	MOVQ	AX, CX
+	SUBQ	cpu_idleLast(DI), CX
+	MOVQ	AX, cpu_idleLast(DI)
+	CMPQ	CX, gap+16(FP)
+	JBE	period
+	MOVQ	AX, cpu_idleStart(DI)
+period:
+	SUBQ	cpu_idleStart(DI), AX
+	CMPQ	AX, poll+8(FP)
+	SETCC	ret+24(FP)
+	JCS	done
+
+	// the timeslice timer is reused (see exec)
 	MOVQ	$0, cpu_armedTSC(DI)
 
 	MOVQ	$const_lapicTimerInit, AX
 	MOVL	BX, (AX)
-
+done:
 	POPFQ
 	RET
 

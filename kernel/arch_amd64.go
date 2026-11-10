@@ -162,12 +162,7 @@ func hwcap2() uint64 {
 	return 0
 }
 
-// epollEvent represents the x86_64 struct epoll_event, which is packed.
-type epollEvent struct {
-	Events uint32
-	Data   uint64
-}
-
+// size of the x86_64 struct epoll_event, which is packed
 const epollEventSize = 12
 
 // sigcontext represents the x86_64 struct sigcontext.

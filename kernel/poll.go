@@ -254,6 +254,8 @@ type epitem struct {
 
 type epollFile struct {
 	items []*epitem
+	// found not ready since the last interest list change
+	watched bool
 }
 
 func (e *epollFile) Mode() uint32 {
@@ -310,6 +312,8 @@ func (e *epollFile) ready(max int, report bool) (evs []byte) {
 		}
 	}
 
+	e.watched = e.watched || len(evs) == 0
+
 	return
 }
 
@@ -360,19 +364,20 @@ func (t *Task) epollCtl(epfd int, op int, fd int, evAddr uint64) Errno {
 		return EPERM
 	}
 
-	var ev epollEvent
+	// struct epoll_event
+	var events uint32
+	var data uint64
 
 	if op != EPOLL_CTL_DEL {
-		b := make([]byte, binary.Size(ev))
+		var b [epollEventSize]byte
 
-		if err := t.proc.mm.copyIn(evAddr, b); err != 0 {
+		if err := t.proc.mm.copyIn(evAddr, b[:]); err != 0 {
 			return err
 		}
 
-		binary.Decode(b, binary.LittleEndian, &ev)
+		events = binary.LittleEndian.Uint32(b[:])
+		data = binary.LittleEndian.Uint64(b[epollEventSize-8:])
 	}
-
-	events, data := ev.Events, ev.Data
 
 	it := ep.find(fd, f)
 
@@ -408,7 +413,10 @@ func (t *Task) epollCtl(epfd int, op int, fd int, evAddr uint64) Errno {
 	}
 
 	// the interest list change might make an epoll_wait ready
-	pollers.wake()
+	if ep.watched {
+		ep.watched = false
+		pollers.wake()
+	}
 
 	return 0
 }

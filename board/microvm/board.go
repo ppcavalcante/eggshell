@@ -46,6 +46,7 @@ func PowerOff(code int) {
 }
 
 // idle halts the processor until the next runtime deadline or IRQ_WAKEUP,
+// unless it should poll for work (see monitor.Alarm),
 // processors without deadline (0) halt for at most maxIdle, as they are not
 // woken up when goroutines become runnable on other processors (M's never
 // stop, see runtime.beforeIdle).
@@ -56,8 +57,7 @@ func idle(until int64) {
 		until = now + maxIdle
 	}
 
-	if until > now {
-		monitor.Alarm(uint64(until - now))
+	if until > now && monitor.Alarm(uint64(until-now)) {
 		CPU.WaitInterrupt()
 
 		// We do not call CPU.SetAlarm(0) to avoid switching the LAPIC

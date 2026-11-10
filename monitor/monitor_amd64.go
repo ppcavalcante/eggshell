@@ -161,6 +161,9 @@ type cpu struct {
 	forceCR3 uint32
 	// timeslice deadline (TSC)
 	armedTSC uint64
+	// idle period start and last Alarm call (TSC)
+	idleStart uint64
+	idleLast  uint64
 
 	// GDT with this processor TSS, which holds its ring 0 stack
 	gdt    [7]uint64
@@ -360,8 +363,18 @@ func (ctx *ExecCtx) Run(quantum uint64) {
 // Alarm arms the LAPIC timer of the calling processor to raise TimerVector
 // (amd64.IRQ_WAKEUP) after the argument number of nanoseconds, to wake it up
 // from amd64.CPU.WaitInterrupt.
-func Alarm(ns uint64) {
-	alarm(uint32(min(ns, 0xffffffff)))
+//
+// With more than one processor, the timer is not armed and false is returned
+// for the first 50µs of an idle period (consecutive calls): a processor which
+// polls takes work queued by the others without the cost of a wake-up.
+func Alarm(ns uint64) bool {
+	var poll uint64
+
+	if len(cpus) > 1 {
+		poll = 50 * tscHz / 1e6
+	}
+
+	return alarm(uint32(min(ns, 0xffffffff)), poll, 20*tscHz/1e6)
 }
 
 // String returns the string form of the execution context registers.
