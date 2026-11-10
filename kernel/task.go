@@ -247,9 +247,9 @@ func (t *Task) run() {
 		klock.Unlock()
 		tr := t.enterUser()
 		klock.Lock()
-		elapsed := nanotime() - start
-		t.utime += elapsed
-		t.proc.utime += elapsed
+		now := nanotime()
+		t.utime += now - start
+		t.proc.utime += now - start
 
 		if t.dead {
 			break
@@ -259,13 +259,11 @@ func (t *Task) run() {
 		case trapSyscall:
 			t.safeSyscall()
 		case trapPreempt:
-			t.lastYield = nanotime()
-			yield()
 		default:
 			t.exception(tr)
 		}
 
-		if now := nanotime(); now-t.lastYield > int64(quantum) {
+		if tr.kind == trapPreempt || now-t.lastYield > int64(quantum) {
 			t.lastYield = now
 			yield()
 		}
