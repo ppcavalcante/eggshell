@@ -7,6 +7,7 @@ package kernel
 
 import (
 	"encoding/binary"
+	"sync/atomic"
 )
 
 // ERESTARTNOHAND restarts a system call only when no handler is invoked.
@@ -28,6 +29,10 @@ const (
 
 // tasks blocked in poll, select and epoll_wait
 var pollers waitQueue
+
+// pollSeq counts the events which might change the readiness of a file,
+// edge-triggered epoll items are reported once for each one.
+var pollSeq atomic.Uint64
 
 // pollWait blocks until check returns true or the timeout (ns, negative for
 // infinite) expires.
@@ -243,6 +248,8 @@ type epitem struct {
 	events   uint32
 	data     uint64
 	disabled bool
+	// pollSeq+1 when last reported (EPOLLET)
+	seq uint64
 }
 
 type epollFile struct {
@@ -273,11 +280,14 @@ func (e *epollFile) prune() {
 	e.items = items
 }
 
-func (e *epollFile) ready(max int) (out []*epitem, revents []uint32) {
+// ready returns the events (struct epoll_event) of at most max ready items,
+// which are consumed (EPOLLONESHOT, EPOLLET) when reported by epoll_wait.
+func (e *epollFile) ready(max int, report bool) (evs []byte) {
 	e.prune()
+	seq := pollSeq.Load() + 1
 
 	for _, it := range e.items {
-		if it.disabled {
+		if it.disabled || it.events&EPOLLET != 0 && it.seq == seq {
 			continue
 		}
 
@@ -287,10 +297,15 @@ func (e *epollFile) ready(max int) (out []*epitem, revents []uint32) {
 			continue
 		}
 
-		out = append(out, it)
-		revents = append(revents, ev)
+		if report {
+			it.disabled = it.events&EPOLLONESHOT != 0
+			it.seq = seq
+		}
 
-		if len(out) >= max {
+		evs = binary.LittleEndian.AppendUint32(evs, ev)
+		evs = binary.LittleEndian.AppendUint64(evs, it.data)
+
+		if len(evs) == max*epollEventSize {
 			break
 		}
 	}
@@ -299,7 +314,7 @@ func (e *epollFile) ready(max int) (out []*epitem, revents []uint32) {
 }
 
 func (e *epollFile) Poll(f *File) uint32 {
-	if items, _ := e.ready(1); len(items) > 0 {
+	if len(e.ready(1, false)) > 0 {
 		return POLLIN
 	}
 
@@ -339,6 +354,12 @@ func (t *Task) epollCtl(epfd int, op int, fd int, evAddr uint64) Errno {
 		return EINVAL
 	}
 
+	// regular files and directories do not support epoll
+	switch f.ops.(type) {
+	case regularFile, dirFile:
+		return EPERM
+	}
+
 	var ev epollEvent
 
 	if op != EPOLL_CTL_DEL {
@@ -370,6 +391,7 @@ func (t *Task) epollCtl(epfd int, op int, fd int, evAddr uint64) Errno {
 		it.events = events
 		it.data = data
 		it.disabled = false
+		it.seq = 0
 	case EPOLL_CTL_DEL:
 		if it == nil {
 			return ENOENT
@@ -404,31 +426,18 @@ func (t *Task) epollWait(epfd int, evAddr uint64, max int, timeout int64) (uint6
 		return fail(EINVAL)
 	}
 
-	var items []*epitem
-	var revents []uint32
+	var evs []byte
 
 	check := func() bool {
-		items, revents = ep.ready(max)
-		return len(items) > 0
+		evs = ep.ready(max, true)
+		return len(evs) > 0
 	}
 
 	if err := t.pollWait(check, timeout); err != 0 {
 		return fail(err)
 	}
 
-	evs := make([]epollEvent, len(items))
-
-	for i, it := range items {
-		evs[i] = epollEvent{Events: revents[i], Data: it.data}
-
-		if it.events&EPOLLONESHOT != 0 {
-			it.disabled = true
-		}
-	}
-
-	b, _ := binary.Append(nil, binary.LittleEndian, evs)
-
-	return uint64(int64(len(items))), t.proc.mm.copyOut(evAddr, b)
+	return uint64(len(evs) / epollEventSize), t.proc.mm.copyOut(evAddr, evs)
 }
 
 // eventfd

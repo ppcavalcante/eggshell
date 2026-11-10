@@ -168,6 +168,8 @@ type epollEvent struct {
 	Data   uint64
 }
 
+const epollEventSize = 12
+
 // sigcontext represents the x86_64 struct sigcontext.
 type sigcontext struct {
 	Gregs   [18]uint64 // see gregs()

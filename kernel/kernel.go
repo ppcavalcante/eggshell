@@ -98,6 +98,7 @@ func waker() {
 
 // wakeAll wakes up all blocked tasks, klock must be held.
 func wakeAll() {
+	pollSeq.Add(1)
 	kcond.Broadcast()
 	wakeQueued()
 }

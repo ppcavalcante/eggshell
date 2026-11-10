@@ -74,6 +74,7 @@ func newInetSocket(stype int, proto int, ep tcpip.Endpoint, wq *waiter.Queue) *i
 		func(waiter.EventMask) {
 			// raised by network stack goroutines, without klock
 			s.q.wake()
+			pollSeq.Add(1)
 			pollers.wake()
 		},
 	)
