@@ -698,15 +698,17 @@ func (t *Task) exit() {
 
 	delete(tasks, t.tid)
 
+	// threads terminated by execve are no longer part of the process
 	for i, o := range p.threads {
 		if o == t {
 			p.threads = append(p.threads[:i], p.threads[i+1:]...)
+
+			if len(p.threads) == 0 {
+				p.exited()
+			}
+
 			break
 		}
-	}
-
-	if len(p.threads) == 0 {
-		p.exited()
 	}
 
 	wakeAll()
