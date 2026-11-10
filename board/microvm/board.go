@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/usbarmory/tamago/amd64"
+	"github.com/usbarmory/tamago/amd64/lapic"
 
 	"github.com/usbarmory/eggshell/kernel"
 	"github.com/usbarmory/eggshell/monitor"
@@ -58,6 +59,10 @@ func idle(until int64) {
 	if until > now {
 		monitor.Alarm(uint64(until - now))
 		CPU.WaitInterrupt()
+
+		// We do not call CPU.SetAlarm(0) to avoid switching the LAPIC
+		// timer to TSC-deadline mode.
+		CPU.LAPIC.IPI(0, amd64.IRQ_KICK, lapic.ICR_DST_REST|lapic.ICR_DLV_IRQ)
 	}
 }
 
