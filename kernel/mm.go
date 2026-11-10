@@ -665,18 +665,19 @@ func (mm *MM) fault(va uint64, access int) Errno {
 		return 0
 	}
 
-	pa, ok := allocPage()
+	pa, ok := newPage()
 
 	if !ok {
 		return ENOMEM
 	}
 
-	if off := page - v.start; off < v.fileLen {
-		n := min(v.fileLen-off, PageSize)
+	b, n := physPage(pa), 0
 
-		v.file.data.readAt(physPage(pa)[:n], int64(v.fileOff+off))
+	if off := page - v.start; off < v.fileLen {
+		n = v.file.data.readAt(b[:min(v.fileLen-off, PageSize)], int64(v.fileOff+off))
 	}
 
+	clear(b[n:])
 	pte.store(mkLeaf(pa, v.prot))
 
 	return 0
@@ -857,7 +858,7 @@ func (mm *MM) fork() (n *MM, err Errno) {
 				var ok bool
 				src := pa
 
-				if pa, ok = allocPage(); !ok {
+				if pa, ok = newPage(); !ok {
 					err = ENOMEM
 					return
 				}

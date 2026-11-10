@@ -70,6 +70,16 @@ func pageIndex(pa uint64) int {
 
 // allocPage returns a zeroed physical page.
 func allocPage() (pa uint64, ok bool) {
+	if pa, ok = newPage(); ok {
+		clear(physPage(pa))
+	}
+
+	return
+}
+
+// newPage returns a physical page with undefined contents, for callers which
+// overwrite it.
+func newPage() (pa uint64, ok bool) {
 	n := len(pages.free)
 
 	if n == 0 {
@@ -80,8 +90,6 @@ func allocPage() (pa uint64, ok bool) {
 	pages.free = pages.free[:n-1]
 	pages.refs[pageIndex(pa)] = 1
 	pages.used++
-
-	clear(physPage(pa))
 
 	return pa, true
 }
