@@ -87,6 +87,7 @@ let
               # hardcoded gcc (absent from cross toolchains)
               postPatch = (old.postPatch or "") + ''
                 sed -i '/^all:/s/ module_tests//' src/Makefile
+                sed -i '/cd xxhash/s/ lib / libxxhash.a /' deps/Makefile
               '';
             }
           );
